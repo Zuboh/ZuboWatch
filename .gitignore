@@ -1,6 +1,28 @@
+# Secrets
 .env
+
+# Database locale (legacy)
 storage.json
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtualenv
 venv/
+.venv/
+
+# Claude Code
 .claude/
+CLAUDE.md
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp

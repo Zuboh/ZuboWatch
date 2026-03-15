@@ -1,15 +1,6 @@
 from utils.mapper import convert_type, convert_platforms_to_provider_ids, get_mood_question
 from utils.tmbd import fetch_candidates, get_details, get_watch_providers
-from utils.storage import (
-    set_user_selection,
-    get_user_selections,
-    salva_feedback,
-    get_profilo_utente,
-    salva_sessione,
-    get_sessione,
-    aggiungi_watchlist,
-    segna_come_visto,
-)
+from utils import storage
 from utils import scorer
 from parameters import PARAMETERS
 from keyboards.keyboard import build_keyboard
@@ -57,13 +48,13 @@ async def _formatta_film(tipo_api: str, film: dict) -> tuple[str, InlineKeyboard
     return text, feedback_kb
 
 
-async def _gestisci_feedback(query, user_id: int, data: str) -> None:
+async def _gestisci_feedback(query, db, user_id: int, data: str) -> None:
     like = data.startswith("like_")
     film_id = int(data.split("_", 1)[1])
 
-    sessione = get_sessione(user_id)
+    sessione = await storage.get_sessione(db, user_id)
     genre_ids = sessione.get("ultimo_film_genres", [])
-    salva_feedback(user_id, film_id, genre_ids, like)
+    await storage.salva_feedback(db, user_id, film_id, genre_ids, like)
 
     tipo_api = sessione.get("tipo_api", "movie")
     mood = sessione.get("mood", "")
@@ -71,22 +62,22 @@ async def _gestisci_feedback(query, user_id: int, data: str) -> None:
     provider_ids = convert_platforms_to_provider_ids(piattaforme)
 
     candidates = await fetch_candidates(tipo_api, [mood], provider_ids)
-    profilo = get_profilo_utente(user_id)
+    profilo = await storage.get_profilo_utente(db, user_id)
     nuovo_film = scorer.pick_best(candidates, profilo, mood)
 
-    salva_sessione(user_id, mood, piattaforme, tipo_api, nuovo_film)
+    await storage.salva_sessione(db, user_id, mood, piattaforme, tipo_api, nuovo_film)
     text, feedback_kb = await _formatta_film(tipo_api, nuovo_film)
     await query.edit_message_text(text, reply_markup=feedback_kb)
     await query.answer("✅ Grazie!" if like else "👎 Capito!")
 
 
-async def _genera_film(query, user_id: int) -> None:
-    tipo_set = get_user_selections(user_id, "tipo")
+async def _genera_film(query, db, user_id: int) -> None:
+    tipo_set = await storage.get_user_selections(db, user_id, "tipo")
     tipo = next(iter(tipo_set), None)
     tipo_api = convert_type(tipo)
 
-    moods = list(get_user_selections(user_id, "mood"))
-    piattaforme = list(get_user_selections(user_id, "piattaforma"))
+    moods = list(await storage.get_user_selections(db, user_id, "mood"))
+    piattaforme = list(await storage.get_user_selections(db, user_id, "piattaforma"))
     provider_ids = convert_platforms_to_provider_ids(piattaforme)
 
     if not tipo_api or not moods:
@@ -98,18 +89,18 @@ async def _genera_film(query, user_id: int) -> None:
         await query.answer("Nessun risultato trovato", show_alert=True)
         return
 
-    profilo = get_profilo_utente(user_id)
+    profilo = await storage.get_profilo_utente(db, user_id)
     mood_principale = moods[0]
     choice = scorer.pick_best(candidates, profilo, mood_principale)
 
-    salva_sessione(user_id, mood_principale, piattaforme, tipo_api, choice)
+    await storage.salva_sessione(db, user_id, mood_principale, piattaforme, tipo_api, choice)
     text, feedback_kb = await _formatta_film(tipo_api, choice)
     await query.answer()
     await query.message.reply_text(text, reply_markup=feedback_kb)
 
 
-async def _gestisci_watchlist(query, user_id: int, film_id: int) -> None:
-    sessione = get_sessione(user_id)
+async def _gestisci_watchlist(query, db, user_id: int, film_id: int) -> None:
+    sessione = await storage.get_sessione(db, user_id)
     tipo_api = sessione.get("tipo_api", "movie")
 
     details, providers_list = await asyncio.gather(
@@ -125,7 +116,7 @@ async def _gestisci_watchlist(query, user_id: int, film_id: int) -> None:
         "voto": details.get("vote_average"),
     }
     piattaforma = providers_list[0] if providers_list else (sessione.get("piattaforme") or [""])[0]
-    aggiungi_watchlist(user_id, film, piattaforma)
+    await storage.aggiungi_watchlist(db, user_id, film, piattaforma)
 
     solo_feedback_kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("👍", callback_data=f"like_{film_id}"),
@@ -135,8 +126,8 @@ async def _gestisci_watchlist(query, user_id: int, film_id: int) -> None:
     await query.answer("🕐 Salvato in watchlist!")
 
 
-async def _gestisci_gia_visto(query, user_id: int, film_id: int) -> None:
-    segna_come_visto(user_id, film_id)
+async def _gestisci_gia_visto(query, db, user_id: int, film_id: int) -> None:
+    await storage.segna_come_visto(db, user_id, film_id)
 
     risposta_kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("👍 Sì, era bello", callback_data=f"like_{film_id}"),
@@ -150,25 +141,26 @@ async def handle_buttons(update, context):
     query = update.callback_query
     user_id = query.from_user.id
     data = query.data
+    db = context.bot_data["db"]
 
     category = context.user_data.get("next_category", "tipo")
 
     if data.startswith("like_") or data.startswith("dislike_"):
-        await _gestisci_feedback(query, user_id, data)
+        await _gestisci_feedback(query, db, user_id, data)
         return
 
     if data.startswith("watchlist_"):
-        await _gestisci_watchlist(query, user_id, int(data.split("_", 1)[1]))
+        await _gestisci_watchlist(query, db, user_id, int(data.split("_", 1)[1]))
         return
 
     if data.startswith("gia_visto_"):
-        await _gestisci_gia_visto(query, user_id, int(data.split("_", 1)[1]))
+        await _gestisci_gia_visto(query, db, user_id, int(data.split("_", 1)[1]))
         return
 
     if data == "next_mood":
         context.user_data["next_category"] = "mood"
-        platforms = get_user_selections(user_id, "piattaforma")
-        keyboard = build_keyboard(PARAMETERS["mood"], get_user_selections(user_id, "mood"))
+        platforms = await storage.get_user_selections(db, user_id, "piattaforma")
+        keyboard = build_keyboard(PARAMETERS["mood"], await storage.get_user_selections(db, user_id, "mood"))
         await query.edit_message_text(
             text=f"✅ Piattaforme: {', '.join(platforms)}!\n{get_mood_question()}",
             reply_markup=keyboard,
@@ -176,22 +168,22 @@ async def handle_buttons(update, context):
         return
 
     if data == "generate":
-        await _genera_film(query, user_id)
+        await _genera_film(query, db, user_id)
         return
 
-    selected = get_user_selections(user_id, category)
+    selected = await storage.get_user_selections(db, user_id, category)
     if data in selected:
         selected.remove(data)
     else:
         selected.add(data)
 
-    set_user_selection(user_id, category, selected)
+    await storage.set_user_selection(db, user_id, category, selected)
     await query.answer()
 
     if category == "tipo":
         context.user_data["next_category"] = "piattaforma"
         next_cat = "piattaforma"
-        keyboard = build_keyboard(PARAMETERS[next_cat], get_user_selections(user_id, next_cat))
+        keyboard = build_keyboard(PARAMETERS[next_cat], await storage.get_user_selections(db, user_id, next_cat))
         await query.edit_message_text(
             text=f"✅ Hai selezionato {', '.join(selected)}!\nOra scegli le piattaforme che possiedi: ",
             reply_markup=keyboard,

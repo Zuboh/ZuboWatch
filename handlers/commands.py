@@ -3,17 +3,19 @@ from keyboards.keyboard import build_keyboard
 from telegram import InlineKeyboardMarkup
 from telegram import Update
 from telegram.ext import ContextTypes
-from utils.storage import get_user_selections, clear_user, get_watchlist, get_stats
+from utils import storage
 from utils.messages import HELP_TEXT, STATS_NO_DATA, WATCHLIST_VUOTA
 from utils.logger import logger
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    db = context.bot_data["db"]
 
-    clear_user(user_id)
+    await storage.clear_user(db, user_id)
 
     context.user_data["next_category"] = "tipo"
-    selected = get_user_selections(user_id, "tipo")
+    selected = await storage.get_user_selections(db, user_id, "tipo")
 
     keyboard = build_keyboard(PARAMETERS["tipo"], selected)
 
@@ -23,18 +25,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     logger.info(f"Utente {update.effective_user.username} ha aperto /start")
 
-async def clear(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+
+async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    clear_user(user_id)
+    db = context.bot_data["db"]
+    await storage.clear_user(db, user_id)
 
     await update.message.reply_text(
         "🧹 Hai azzerato i campi. /start per inziare",
     )
     logger.info(f"Utente {update.effective_user.username} ha usato /clear")
 
-async def watchlist_command_handler(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+
+async def watchlist_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    watchlist = get_watchlist(user_id)
+    db = context.bot_data["db"]
+    watchlist = await storage.get_watchlist(db, user_id)
 
     if not watchlist:
         await update.message.reply_text(WATCHLIST_VUOTA)
@@ -43,7 +49,7 @@ async def watchlist_command_handler(update: Update, _context: ContextTypes.DEFAU
 
     righe = []
     for film in watchlist:
-        generi_str = ", ".join(film.get("generi", []))
+        generi_str = ", ".join(film.get("generi") or [])
         voto = film.get("voto")
         voto_str = f"⭐ Voto: {voto:.1f}" if voto else ""
         meta = "  |  ".join(filter(None, [voto_str, f"🎭 {generi_str}" if generi_str else ""]))
@@ -64,9 +70,10 @@ async def help_handler(update: Update, _context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Utente {update.effective_user.username} ha richiesto /help")
 
 
-async def stats_handler(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+async def stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    stats = get_stats(user_id)
+    db = context.bot_data["db"]
+    stats = await storage.get_stats(db, user_id)
 
     nessun_dato = not stats["film_visti"] and not stats["top_generi"] and not stats["mood_preferito"]
     if nessun_dato:
@@ -85,19 +92,3 @@ async def stats_handler(update: Update, _context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("\n".join(righe), parse_mode="Markdown")
     logger.info(f"Utente {update.effective_user.username} ha richiesto /stats")
-
-
-async def show(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    tipo = get_user_selections(user_id, "tipo")
-    mood = get_user_selections(user_id, "mood")
-
-    parts = []
-    if tipo:
-        parts.append(f"Tipo: {', '.join(tipo)}")
-    if mood:
-        parts.append(f"Mood: {', '.join(mood)}")
-    msg = "Selezioni attive:\n" + "\n".join(parts) if parts else "Non hai ancora selezionato nulla."
-
-    await update.message.reply_text(msg)
-    logger.info(f"Utente {update.effective_user.username} ha richiesto /show")

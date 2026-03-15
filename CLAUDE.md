@@ -1,6 +1,6 @@
 # ZuboWatch
 
-Bot Telegram per raccomandazioni film e serie TV tramite TMDb API.
+Bot Telegram per raccomandazioni film e serie TV tramite TMDb API. Persistenza su PostgreSQL (Supabase), deploy su Render.
 
 ## Flusso principale
 
@@ -12,19 +12,30 @@ Dopo ogni 👍/👎 il bot propone automaticamente un nuovo film (edit del messa
 
 ```bash
 python -m venv venv && source venv/bin/activate
-pip install python-telegram-bot httpx python-dotenv
+pip install -r requirements.txt
 ```
 
-Crea `.env` nella root:
+Crea `.env` nella root (vedi `.env.example`):
 ```
 TELEGRAM_TOKEN=<token da BotFather>
 TMDB_API_KEY=<chiave da themoviedb.org>
+DATABASE_URL=postgresql://user:password@host:5432/dbname
 ```
 
 Avvia:
 ```bash
 python main.py
 ```
+
+## Deploy su Render + Supabase
+
+1. **Supabase**: crea un progetto → SQL Editor → incolla e esegui `db/schema.sql`
+2. **Supabase**: copia la connection string da *Project Settings → Database → Connection string (URI)*
+3. **Render**: crea un *Background Worker* puntando al repo GitHub
+4. **Render**: aggiungi le variabili d'ambiente: `TELEGRAM_TOKEN`, `TMDB_API_KEY`, `DATABASE_URL`
+5. **Render**: il `Procfile` (`worker: python main.py`) viene usato automaticamente
+
+> Nota: `DATABASE_URL` con `postgres://` viene normalizzato automaticamente a `postgresql://` in `config.py`.
 
 ## Comandi utili
 
@@ -36,23 +47,54 @@ python main.py
 
 ```
 ZuboWatch/
-├── main.py              # Entry point, setup Application Telegram
-├── config.py            # Lettura variabili d'ambiente (.env)
+├── main.py              # Entry point, setup Application Telegram, pool asyncpg
+├── config.py            # Lettura variabili d'ambiente (.env), DATABASE_URL normalization
 ├── parameters.py        # Dati statici: tipi contenuto, mood disponibili
-├── storage.json         # Persistenza runtime (auto-generato, non committare con dati reali)
+├── Procfile             # Render worker: python main.py
+├── requirements.txt     # Dipendenze Python
+├── .env.example         # Template variabili d'ambiente
+├── db/
+│   └── schema.sql       # Schema PostgreSQL (users + watchlist)
 ├── handlers/
 │   ├── commands.py      # Handler comandi: /start, /clear, /watchlist, /stats, /help
 │   └── callbacks.py     # Handler bottoni inline
 ├── keyboards/
 │   └── keyboard.py      # Builder InlineKeyboard
 └── utils/
-    ├── ombd.py          # Chiamate API TMDb
+    ├── tmbd.py          # Chiamate API TMDb
     ├── mapper.py        # Mapping mood → generi TMDb, normalize_label(), get_mood_question()
     ├── scorer.py        # Algoritmo di scoring e selezione pesata
-    ├── storage.py       # Lettura/scrittura storage.json, profilo utente, sessione, watchlist, stats
+    ├── storage.py       # Persistenza PostgreSQL con asyncpg (tutte le funzioni async)
     ├── messages.py      # Testi user-facing centralizzati (HELP_TEXT, STATS_NO_DATA, WATCHLIST_VUOTA)
     └── logger.py        # Logger centralizzato
 ```
+
+## Schema database PostgreSQL
+
+```sql
+-- Tabella users
+user_id           TEXT PRIMARY KEY
+genre_weights     JSONB DEFAULT '{}'          -- boost/malus per genere
+mood_history      JSONB DEFAULT '[]'          -- storico mood per sessione
+seen_ids          JSONB DEFAULT '[]'          -- film già visti/proposti
+selezioni         JSONB DEFAULT '{}'          -- selezioni UI correnti (tipo, piattaforma, mood)
+sessione_corrente JSONB DEFAULT '{}'          -- contesto ultima raccomandazione
+
+-- Tabella watchlist
+id          SERIAL PRIMARY KEY
+user_id     TEXT REFERENCES users(user_id)
+film_id     INTEGER NOT NULL
+titolo      TEXT NOT NULL
+anno        INTEGER
+generi      JSONB DEFAULT '[]'
+voto        FLOAT
+piattaforma TEXT
+UNIQUE(user_id, film_id)
+```
+
+Il pool asyncpg registra un codec JSONB in `main.py:on_startup` → i campi JSONB vengono automaticamente serializzati/deserializzati come dict/list Python.
+
+La firma standard di tutte le funzioni storage è `async def nome(db, user_id, ...)` dove `db` è il pool asyncpg passato da `context.bot_data["db"]`.
 
 ## Algoritmo di scoring (`utils/scorer.py`)
 
@@ -70,7 +112,7 @@ score × boost_genere_personale
 | Rilevanza mood | 30% | generi del film ∩ generi del mood / totale generi mood |
 | Boost personale | moltiplicatore | max(genre_weights[g] per g in film) |
 
-Selezione finale: top-10 per score → `random.choices` con pesi proporzionali (non deterministico ma orientato verso i migliori).
+Selezione finale: top-10 per score → `random.choices` con pesi proporzionali.
 
 Film già visti (`seen_ids`) vengono esclusi. Se tutti i candidati sono già visti, si riusa il pool completo.
 
@@ -93,49 +135,6 @@ Con più mood selezionati i generi vengono uniti (OR): TMDb riceve `28|12|53|35`
 
 **Per aggiungere un mood:** aggiungi la voce in `parameters.py:PARAMETERS["mood"]` e la mappatura in `mapper.py:MOOD_TO_GENRES` con la stessa chiave normalizzata (prima parola, capitalize).
 
-## Schema completo `storage.json`
-
-```json
-{
-  "user_id": {
-    "tipo": ["Film"],
-    "piattaforma": ["Netflix"],
-    "mood": ["Azione"],
-    "profilo": {
-      "genre_weights": { "28": 1.2, "35": 0.8 },
-      "seen_ids": [123, 456],
-      "mood_history": ["Azione", "Horror", "Azione"]
-    },
-    "sessione_corrente": {
-      "mood": "Azione",
-      "piattaforme": ["Netflix"],
-      "tipo_api": "movie",
-      "ultimo_film_id": 456,
-      "ultimo_film_genres": [28, 53],
-      "ultimo_film_titolo": "Mad Max",
-      "ultimo_film_anno": 2015,
-      "ultimo_film_voto": 7.6
-    },
-    "watchlist": [
-      {
-        "film_id": 123,
-        "titolo": "Inception",
-        "anno": 2010,
-        "generi": ["Azione", "Fantascienza"],
-        "voto": 8.4,
-        "piattaforma": "Netflix"
-      }
-    ]
-  }
-}
-```
-
-- `genre_weights`: boost/malus per genere, inizia a 1.0, range [0.5, 1.5], delta ±0.1 per feedback
-- `seen_ids`: film già proposti, esclusi dalla selezione finché non esauriti
-- `mood_history`: lista dei mood usati nelle sessioni, usata da `get_stats()` per calcolare il mood preferito
-- `sessione_corrente`: contesto dell'ultima raccomandazione, usato per il ciclo feedback → prossimo film
-- `watchlist`: film salvati con 🕐; i metadati vengono sempre da TMDb al momento del salvataggio
-
 ## Bottoni inline dopo ogni film
 
 ```
@@ -151,8 +150,8 @@ Con più mood selezionati i generi vengono uniti (OR): TMDb riceve `28|12|53|35`
 5. Edita il messaggio con il nuovo film
 
 **Flusso 🕐 Guarda più tardi (`watchlist_{film_id}`):**
-1. Chiama `get_details` e `get_watch_providers` su TMDb con `film_id` da `callback_data` — i metadati vengono sempre dall'API, mai dalla sessione (la sessione potrebbe già essere aggiornata a un film successivo)
-2. Chiama `aggiungi_watchlist()` (idempotente: ignora duplicati)
+1. Chiama `get_details` e `get_watch_providers` su TMDb con `film_id` da `callback_data` — i metadati vengono sempre dall'API, mai dalla sessione
+2. Chiama `aggiungi_watchlist()` (idempotente: ON CONFLICT DO NOTHING)
 3. Rimuove i bottoni 🕐 e ✅, mantiene 👍 👎
 4. Risposta inline: "🕐 Salvato in watchlist!"
 
@@ -165,17 +164,17 @@ Con più mood selezionati i generi vengono uniti (OR): TMDb riceve `28|12|53|35`
 
 **`/watchlist`**: mostra la lista salvata formattata (titolo, voto, generi, piattaforma). `parse_mode="Markdown"`.
 
-**`/stats`**: chiama `storage.get_stats(user_id)`. Calcola:
+**`/stats`**: chiama `storage.get_stats(db, user_id)`. Calcola:
 - `top_generi`: top-3 generi per `genre_weight` più alto, convertiti in nomi via `GENRE_ID_TO_NAME`
 - `film_visti`: `len(seen_ids)`
 - `mood_preferito`: mood più frequente in `mood_history`
-- `watchlist_count`: `len(watchlist)`
+- `watchlist_count`: COUNT dalla tabella watchlist
 
 Se nessun dato ancora disponibile, mostra `STATS_NO_DATA` da `utils/messages.py`.
 
 **`/help`**: testo statico `HELP_TEXT` da `utils/messages.py`.
 
-**`/clear`**: resetta tipo/piattaforma/mood (non tocca profilo, watchlist o storico).
+**`/clear`**: resetta `selezioni` e `sessione_corrente` (non tocca profilo, watchlist o storico).
 
 ## Come estendere
 
@@ -197,17 +196,16 @@ Aggiungi la costante in `utils/messages.py` e importala nell'handler.
 - Tutto **async/await** (python-telegram-bot v20+)
 - **Type hints** su ogni funzione
 - `normalize_label()` in `mapper.py` gestisce strip emoji + capitalize per le label
-- Storage: set in memoria → list in JSON (conversione gestita in `storage.py`)
+- `db` (pool asyncpg) sempre primo parametro in `storage.py`, preso da `context.bot_data["db"]`
 - Usa `utils/logger.py` per il logging, **non `print()`** (eccezione: errori TMDb)
 - Nessuna logica di scoring fuori da `scorer.py`
-- Nessuna chiamata TMDb fuori da `ombd.py`
+- Nessuna chiamata TMDb fuori da `tmbd.py`
 - Nessun `if mood == ...` fuori da `mapper.py`
 - Testi user-facing in `utils/messages.py`, mai hardcodati negli handler
 
 ## Avvertenze
 
-- `storage.json` è auto-generato a runtime — non committarlo con dati utenti reali
-- `context.user_data` (Telegram) traccia solo `next_category`; lo stato principale vive in `storage.json`
-- TMDb API key **solo in `.env`**, mai hardcoded nel codice
-- Il bot usa `run_polling()` (non webhooks) — adatto per sviluppo/uso locale, non per produzione
+- `context.user_data` (Telegram) traccia solo `next_category`; lo stato principale vive nel DB
+- TMDb API key e DATABASE_URL **solo in `.env`**, mai hardcoded nel codice
+- Il bot usa `run_polling()` (non webhooks) — adatto per sviluppo locale e Render worker
 - Il menu comandi Telegram si aggiorna solo al riavvio del bot (via `post_init`)
