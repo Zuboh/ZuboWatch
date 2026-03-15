@@ -33,7 +33,7 @@ Dopo ogni 👍/👎 il bot propone subito il film successivo (editando il messag
 - **TMDb API** per metadati film, provider streaming, dettagli
 - **PostgreSQL** (Supabase) per persistenza utenti, watchlist e profili
 - **asyncpg** per connessioni async al DB con connection pooling
-- **Render** per il deploy (Background Worker)
+- **Fly.io** per il deploy (container Docker)
 
 ## Setup locale
 
@@ -70,13 +70,26 @@ DATABASE_URL=postgresql://user:password@host:5432/dbname
 python main.py
 ```
 
-## Deploy su Render
+## Deploy su Fly.io
 
 1. Crea un progetto su [Supabase](https://supabase.com) → SQL Editor → esegui `db/schema.sql`
 2. Copia la *Connection string (URI)* da *Project Settings → Database*
-3. Su [Render](https://render.com) crea un **Background Worker** collegato al repo GitHub
-4. Aggiungi le variabili d'ambiente: `TELEGRAM_TOKEN`, `TMDB_API_KEY`, `DATABASE_URL`
-5. Il `Procfile` (`worker: python main.py`) viene usato automaticamente
+3. Installa flyctl: https://fly.io/docs/hands-on/install-flyctl/
+4. Esegui il login e il primo deploy:
+   ```bash
+   fly auth login
+   fly launch
+   ```
+5. Aggiungi le variabili d'ambiente:
+   ```bash
+   fly secrets set TELEGRAM_TOKEN=...
+   fly secrets set TMDB_API_KEY=...
+   fly secrets set DATABASE_URL=...
+   ```
+6. Deploy successivi:
+   ```bash
+   fly deploy
+   ```
 
 ## Comandi
 
@@ -96,7 +109,9 @@ ZuboWatch/
 ├── main.py              # Entry point
 ├── config.py            # Variabili d'ambiente
 ├── parameters.py        # Dati statici (tipi, mood, piattaforme)
-├── Procfile             # Render worker
+├── Dockerfile           # Immagine Docker per Fly.io
+├── fly.toml             # Configurazione Fly.io
+├── Procfile             # Render worker (alternativa)
 ├── requirements.txt     # Dipendenze
 ├── .env.example         # Template .env
 ├── db/

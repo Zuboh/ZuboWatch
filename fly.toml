@@ -1,0 +1,7 @@
+app = "zubowatch"
+primary_region = "mad"  # Madrid, più vicino all'Italia
+
+[build]
+
+[env]
+  PYTHONUNBUFFERED = "1"
