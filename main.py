@@ -27,7 +27,8 @@ async def on_startup(app):
 
 
 async def on_shutdown(app):
-    await app.bot_data["db"].close()
+    if "db" in app.bot_data:
+        await app.bot_data["db"].close()
 
 
 app = (
