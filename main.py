@@ -16,6 +16,8 @@ async def on_startup(app):
             decoder=json.loads,
             schema="pg_catalog",
         )
+    import os
+    print(f"DATABASE_URL host: {os.environ.get('DATABASE_URL', 'NON TROVATO')[:50]}")
     app.bot_data["db"] = await asyncpg.create_pool(config.DATABASE_URL, init=_init_conn)
     await storage.init_db(app.bot_data["db"])
     await app.bot.set_my_commands([
